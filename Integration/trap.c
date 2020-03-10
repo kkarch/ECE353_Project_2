@@ -35,7 +35,6 @@ typedef struct args_for_thread_t {
     int arg1;               /* First argument */
     float arg2;             /* Second argument */
     double *partial_integral;    /* Third argument */
-    int done;        /* Number of worker threads */
 } ARGS_FOR_THREAD; 
 
 double compute_using_pthreads (float, float, int, float, int);
@@ -149,20 +148,17 @@ compute_using_pthreads (float a, float b, int n, float h, int num_threads)
         while(trap_count-close_trap<=num_threads){
             if (trap_count<=n-1){
                 pthread_create (&thread_id[trap_count], &attributes, my_func, (void *) &args_for_thread[trap_count]);
-              //  printf("Thread #%d created.\n",trap_count);
+               // printf("Thread #%d created.\n",trap_count);
                 trap_count++;
                 }
         }
-                 
+                        
         /* Wait for workers to finish */
-        int close_trap_temp=close_trap;
         //for (i = 1; i <= num_threads; i++){
-            if (close_trap_temp<=n-1){
-           // printf("Closing threads within range %d to %d\n", close_trap_temp, close_trap_temp+num_threads);
-              for (int i=close_trap_temp; i<=close_trap_temp+num_threads; i++){
-                pthread_join (thread_id[i], NULL);
-               // printf("Current close trap count is %d\n", close_trap);
-                close_trap++;}
+            if (close_trap<=n-1){
+                pthread_join (thread_id[close_trap], NULL);
+                //printf("Closed %d traps so far\n", close_trap);
+                close_trap++;
             }
        // }
             
@@ -171,7 +167,6 @@ compute_using_pthreads (float a, float b, int n, float h, int num_threads)
     for (i = 1; i <= n-1; i++){
             integral += partial_integral[i];
         }
-       // printf("Group of %d threads complete.\n", num_threads);
 
     integral=integral*h;
     //printf("Thread %d is done with partial integral %f\n", n, integral);
