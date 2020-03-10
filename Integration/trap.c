@@ -105,8 +105,10 @@ compute_gold (float a, float b, int n, float h)
 
    integral = (f(a) + f(b))/2.0;
 
-   for (k = 1; k <= n-1; k++) 
+   for (k = 1; k <= n-1; k++){
      integral += f(a+k*h);
+     //printf("Single thread computed f(%f)\n",a+k*h);
+     }
    
    integral = integral*h;
 
@@ -118,19 +120,22 @@ double
 compute_using_pthreads (float a, float b, int n, float h, int num_threads)
 {
 	double integral = (f(a) + f(b))/2.0;
+    //printf("Thread 0 is done with partial integral %f\n", integral);
  
     //added from vector_dot_product_v1
     pthread_t *thread_id;                       /* Data structure to store the thread IDs */
     pthread_attr_t attributes;                  /* Thread attributes */
     pthread_attr_init(&attributes);             /* Initialize thread attributes to default values */
     int i;
+    int trap_count=1;
+    int close_trap=1;
 
     /* Allocate memory on heap for data structures and create worker threads */
-    thread_id = (pthread_t *) malloc (sizeof (pthread_t) * num_threads);
-    double *partial_integral = (double *) malloc (sizeof (double) * num_threads);
-    ARGS_FOR_THREAD *args_for_thread = (ARGS_FOR_THREAD *) malloc (sizeof (ARGS_FOR_THREAD) * num_threads);
+    thread_id = (pthread_t *) malloc (sizeof (pthread_t) * n);
+    double *partial_integral = (double *) malloc (sizeof (double) * n);
+    ARGS_FOR_THREAD *args_for_thread = (ARGS_FOR_THREAD *) malloc (sizeof (ARGS_FOR_THREAD) * n);
 
-    for (i = 0; i < num_threads; i++) {
+    for (i = 1; i <= n-1; i++) {
         args_for_thread[i].num_threads = num_threads;
         args_for_thread[i].tid = i; 
         args_for_thread[i].arg1 = a; 
@@ -138,19 +143,34 @@ compute_using_pthreads (float a, float b, int n, float h, int num_threads)
         args_for_thread[i].partial_integral = partial_integral; 
     }
 
-    for (i = 0; i < num_threads; i++)
-    pthread_create (&thread_id[i], &attributes, my_func, (void *) &args_for_thread[i]);
-					 
-    /* Wait for workers to finish */
-    for (i = 0; i < num_threads; i++)
-        pthread_join (thread_id[i], NULL);
-		 
-    /* Accumulate partial integrals computed by worker threads */ 
-    for (i = 0; i < num_threads; i++){
-        integral += partial_integral[i];
+    while (trap_count<=n-1){
+        //for (i = 1; i <= num_threads; i++){//only run 4 threads at a time
+        while(trap_count-close_trap<=4){
+            if (trap_count<=n-1){
+                pthread_create (&thread_id[trap_count], &attributes, my_func, (void *) &args_for_thread[trap_count]);
+                //printf("Thread #%d created.\n",trap_count);
+                trap_count++;
+                }
+        }
+                        
+        /* Wait for workers to finish */
+        //for (i = 1; i <= num_threads; i++){
+            if (close_trap<=n-1){
+                pthread_join (thread_id[close_trap], NULL);
+                //printf("Current trap count is %d\n", close_trap);
+                close_trap++;
+            }
+       // }
+            
+        /* Accumulate partial integrals computed by worker threads */ 
     }
+    for (i = 1; i <= n-1; i++){
+            integral += partial_integral[i];
+        }
+        //printf("Group of %d threads complete.\n", num_threads);
 
     integral=integral*h;
+    //printf("Thread %d is done with partial integral %f\n", n, integral);
     return integral;
 }
 
@@ -162,11 +182,11 @@ my_func (void *this_arg)
 
     /* Compute partial sum that this thread is responsible for */
     double partial_integral = 0.0; 
-	partial_integral=f(args_for_me->arg1+args_for_me->tid*args_for_me->arg2);
+	  partial_integral=f(args_for_me->arg1+(args_for_me->tid*args_for_me->arg2));
 
     /* Store partial integrals into the partial_sum array */
     args_for_me->partial_integral[args_for_me->tid] = (float) partial_integral;
-    //printf ("Thread %d is done \n", args_for_me->tid);
+    //printf ("Thread %d is done with partial integral= %f using f(%f)\n", args_for_me->tid, partial_integral, (args_for_me->arg1+(args_for_me->tid*args_for_me->arg2)));
     pthread_exit ((void *) 0);
 }
 
