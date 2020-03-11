@@ -4,10 +4,12 @@
  * Date modified: February 21, 2020
  *
  * Compile as follows:
- * gcc -o solver solver.c solver_gold.c -O3 -Wall -std=c99 -lm -lpthread
+ * gcc -o solver solver.c solver_gold.c -O3 -Wall -std=gnu99 -lm -lpthread
  *
  * If you wish to see debug info, add the -D DEBUG option when compiling the code.
  */
+
+
 
 #include <stdio.h>
 #include <string.h>
@@ -18,14 +20,35 @@
 #include <math.h>
 #include "grid.h" 
 
+/* Shared data structure used by the threads */
+typedef struct args_for_thread_t {
+    int tid;                          /* The thread ID */
+    int num_threads;                  /* Number of worker threads */
+    int offset;                       /* Starting offset for thread within the vectors */
+    int chunk_size;                   /* Chunk size */
+    double *diff;                      /* Location of the shared variable sum */
+    int *numels;
+    int *ret_numiter;
+    pthread_mutex_t *mutex_for_diff;   /* Location of the lock variable protecting sum */
+    grid_t *ref_grid;                      /* Location of the grid */
+    grid_t *update_grid                      /* Location of the grid */
+} ARGS_FOR_THREAD;
+
+pthread_barrier_t barrier; 
+
+
+
+
 extern int compute_gold (grid_t *);
 int compute_using_pthreads_jacobi (grid_t *, int);
+void *Jacobi(void *);
 void compute_grid_differences(grid_t *, grid_t *);
 grid_t *create_grid (int, float, float);
 grid_t *copy_grid (grid_t *);
 void print_grid (grid_t *);
 void print_stats (grid_t *);
 double grid_mse (grid_t *, grid_t *);
+
 
 
 int 
@@ -87,11 +110,158 @@ main (int argc, char **argv)
 /* FIXME: Edit this function to use the jacobi method of solving the equation. The final result should be placed in the grid data structure. */
 int 
 compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
-{		
-    return 1;
+{	
+    int bar_ret;
+    grid_t *grid_3 = copy_grid (grid);
+
+
+    pthread_t *tid = (pthread_t *) malloc (sizeof (pthread_t) * num_threads); /* Data structure to store the thread IDs */
+    if (tid == NULL) {
+        perror ("malloc");
+        exit (EXIT_FAILURE);
+    }
+
+    pthread_attr_t attributes;                  /* Thread attributes */
+    pthread_mutex_t mutex_for_diff;              /* Lock for the shared variable sum */
+
+    bar_ret = pthread_barrier_init(&barrier, NULL, num_threads);
+    if (bar_ret != 0){
+        printf("Barrier Init Failure\n");
+        exit(EXIT_FAILURE);
+        }
+
+    
+    pthread_attr_init (&attributes);            /* Initialize the thread attributes to the default values */
+    pthread_mutex_init (&mutex_for_diff, NULL);  /* Initialize the mutex */
+
+
+    /* Allocate memory on the heap for the required data structures and create the worker threads */
+    int i;
+    double diff = 0;
+    int numels = 0;
+    int ret_numiter = 0; 
+    ARGS_FOR_THREAD **args_for_thread;
+    args_for_thread = malloc (sizeof (ARGS_FOR_THREAD) * num_threads);
+    for (i = 0; i < num_threads; i++){
+        args_for_thread[i] = (ARGS_FOR_THREAD *) malloc (sizeof (ARGS_FOR_THREAD));
+        args_for_thread[i]->tid = i; 
+        args_for_thread[i]->num_threads = num_threads;
+        //args_for_thread[i]->offset = i * chunk_size; 
+        //args_for_thread[i]->chunk_size = chunk_size; 
+        args_for_thread[i]->diff = &diff;
+        args_for_thread[i]->numels = &numels;
+        args_for_thread[i]->ret_numiter = &ret_numiter;
+        args_for_thread[i]->mutex_for_diff = &mutex_for_diff;
+        args_for_thread[i]->ref_grid = grid;
+        args_for_thread[i]->update_grid=grid_3;
+    }
+
+    for (i = 0; i < num_threads; i++)
+        pthread_create (&tid[i], &attributes, Jacobi, (void *) args_for_thread[i]);
+					 
+    /* Wait for the workers to finish */
+    for(i = 0; i < num_threads-1; i++)
+        pthread_join (tid[i], NULL);
+        //printf("Joined\n");
+  
+    pthread_barrier_destroy(&barrier);
+
+    /* Free data structures */
+    for(i = 0; i < num_threads; i++)
+        free ((void *) args_for_thread[i]);
+
+    return ret_numiter;
 }
 
 
+void *
+Jacobi(void *args)
+{
+    int debug = 0;
+    ARGS_FOR_THREAD *targs = (ARGS_FOR_THREAD *) args;
+
+    int num_iter = 0;
+	int done = 0;
+    int i, j;
+	float old, new; 
+    float eps = 1e-2; /* Convergence criteria. */
+    int num_elements;
+    double t_diff;
+    double avg; 
+
+    grid_t *ref_grid = targs->ref_grid;
+    grid_t *update_grid = targs->update_grid;
+    grid_t *t_grid;
+    
+    if (targs->tid==1 && debug == 1)
+    {
+        printf("ref_grid %d\n",ref_grid->dim);
+        printf("update_grid %d\n",update_grid->dim);
+
+        for ( int i = 0; i < 5; i++)
+        {
+            printf("Thread %d at iteration: %d\n",targs->tid,i);
+            pthread_mutex_lock(targs->mutex_for_diff);
+            *(targs->diff) += 1;
+            pthread_mutex_unlock(targs->mutex_for_diff);
+
+            pthread_barrier_wait(&barrier);
+        }
+    }
+    
+	while(!done) { /* While we have not converged yet. */
+        t_diff = 0.0;
+        num_elements = 0;
+        //printf("Thread %d at iteration: %d\n",targs->tid,num_iter);
+
+        for (i = targs->tid+1; i < (ref_grid->dim - 1); i+=targs->num_threads) {
+            for (j = 1; j < (ref_grid->dim - 1); j++) {
+                old = ref_grid->element[i * ref_grid->dim + j]; /* Store old value of grid point. */
+                /* Apply the update rule. */	
+                new = 0.25 * (ref_grid->element[(i - 1) * ref_grid->dim + j] +\
+                              ref_grid->element[(i + 1) * ref_grid->dim + j] +\
+                              ref_grid->element[i * ref_grid->dim + (j + 1)] +\
+                              ref_grid->element[i * ref_grid->dim + (j - 1)]);
+
+                update_grid->element[i * update_grid->dim + j] = new; /* Update the grid-point value. */
+                t_diff = t_diff + fabs(new - old); /* Calculate the difference in values. */
+                num_elements++;
+            }
+        }
+        pthread_mutex_lock(targs->mutex_for_diff);
+        *(targs->diff) += t_diff;
+        *(targs->numels) += num_elements;
+        pthread_mutex_unlock(targs->mutex_for_diff);
+        //printf ("Iteration %d. DIFF: %f.\n", num_iter, diff);
+        
+        pthread_barrier_wait(&barrier);
+        num_iter++;
+
+        avg = *(targs->diff)/ *(targs->numels);
+
+        pthread_barrier_wait(&barrier);
+
+        if (targs->tid == 0)
+        {
+            printf ("Iteration %d. DIFF: %f.\n", num_iter, avg);
+            *(targs->ret_numiter) = num_iter;
+            *(targs->diff) = 0;
+            *(targs->numels) = 0;
+        }
+        
+            
+        if (avg < eps) 
+            done = 1;
+        
+        t_grid = ref_grid;
+        ref_grid = update_grid;
+        update_grid = t_grid;
+        
+    }
+    
+    //printf("Thread %d exiting!\n",targs->tid);
+    pthread_exit ((void *)0);
+}
 
 /* Create a grid with the specified initial conditions. */
 grid_t * 
