@@ -12,7 +12,7 @@ compute_gold (grid_t *grid)
     int i, j;
 	double diff;
 	float old, new; 
-    float eps = 1e-2; /* Convergence criteria. */
+    float eps = 1e-6; /* Convergence criteria. */
     int num_elements; 
 	
 	while(!done) { /* While we have not converged yet. */

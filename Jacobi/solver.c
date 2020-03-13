@@ -1,10 +1,10 @@
 /* Code for the Jacobi equation solver. 
- * Author: Naga Kandasamy
+ * Author: Naga Kandasamy, Kevin Karch, Madeline Cook
  * Date created: April 19, 2019
- * Date modified: February 21, 2020
+ * Date modified: March 11, 2020
  *
  * Compile as follows:
- * gcc -o solver solver.c solver_gold.c -O3 -Wall -std=gnu99 -lm -lpthread
+ * gcc -o solver solver.c solver_gold.c -O3 -Wall -std=c99 -lm -lpthread -D_GNU_SOURCE
  *
  * If you wish to see debug info, add the -D DEBUG option when compiling the code.
  */
@@ -12,6 +12,8 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
 #include <string.h>
 #include <malloc.h>
 #include <time.h>
@@ -22,16 +24,16 @@
 
 /* Shared data structure used by the threads */
 typedef struct args_for_thread_t {
-    int tid;                          /* The thread ID */
-    int num_threads;                  /* Number of worker threads */
-    int offset;                       /* Starting offset for thread within the vectors */
-    int chunk_size;                   /* Chunk size */
-    double *diff;                      /* Location of the shared variable sum */
-    int *numels;
-    int *ret_numiter;
-    pthread_mutex_t *mutex_for_diff;   /* Location of the lock variable protecting sum */
-    grid_t *ref_grid;                      /* Location of the grid */
-    grid_t *update_grid                      /* Location of the grid */
+    int tid;                            /* The thread ID */
+    int num_threads;                    /* Number of worker threads */
+    int offset;                         /* Starting offset for thread within the vectors */
+    int chunk_size;                     /* Chunk size */
+    double *diff;                       /* Location of the shared variable sum */
+    int *numels;                        /* Location of shared number of elements */
+    int *ret_numiter;                   /* Location of returnable iteration counter */
+    pthread_mutex_t *mutex_for_diff;    /* Location of the lock variable protecting sum */
+    grid_t *ref_grid;                   /* Location of the grid */
+    grid_t *update_grid;                /* Location of the grid */
 } ARGS_FOR_THREAD;
 
 pthread_barrier_t barrier; 
@@ -73,10 +75,19 @@ main (int argc, char **argv)
     /* Grid 2 should have the same initial conditions as Grid 1. */
     grid_t *grid_2 = copy_grid (grid_1); 
 
+    /* Store Execution Times */
+    double s_time = 0;
+    double p_time = 0;
+
 	/* Compute the reference solution using the single-threaded version. */
 	printf ("\nUsing the single threaded version to solve the grid\n");
-	int num_iter = compute_gold (grid_1);
+    struct timeval start, stop;	// Structure for times
+	gettimeofday (&start, NULL);
+    int num_iter = compute_gold (grid_1); // Compute Serial Time
+    gettimeofday (&stop, NULL);
 	printf ("Convergence achieved after %d iterations\n", num_iter);
+    s_time = (stop.tv_sec - start.tv_sec + (stop.tv_usec - start.tv_usec)/(float) 1000000);
+
     /* Print key statistics for the converged values. */
 	printf ("Printing statistics for the interior grid points\n");
     print_stats (grid_1);
@@ -86,8 +97,11 @@ main (int argc, char **argv)
 	
 	/* Use pthreads to solve the equation using the jacobi method. */
 	printf ("\nUsing pthreads to solve the grid using the jacobi method\n");
-	num_iter = compute_using_pthreads_jacobi (grid_2, num_threads);
-	printf ("Convergence achieved after %d iterations\n", num_iter);			
+    gettimeofday (&start, NULL);
+    num_iter = compute_using_pthreads_jacobi (grid_2, num_threads); // Time Serial Version
+    gettimeofday (&stop, NULL);
+    p_time = (stop.tv_sec - start.tv_sec + (stop.tv_usec - start.tv_usec)/(float) 1000000);
+    printf ("Convergence achieved after %d iterations\n", num_iter);			
     printf ("Printing statistics for the interior grid points\n");
 	print_stats (grid_2);
 #ifdef DEBUG
@@ -96,7 +110,12 @@ main (int argc, char **argv)
     
     /* Compute grid differences. */
     double mse = grid_mse (grid_1, grid_2);
+    double speedup = s_time - p_time;
     printf ("MSE between the two grids: %f\n", mse);
+    printf ("Single Threaded Execution Time: %f s\n",s_time);
+    printf ("Multi Threaded Execution Time: %f s\n",p_time);
+    printf ("Speedup: %f s\n",speedup);
+
 
 	/* Free up the grid data structures. */
 	free ((void *) grid_1->element);	
@@ -111,8 +130,8 @@ main (int argc, char **argv)
 int 
 compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
 {	
-    int bar_ret;
-    grid_t *grid_3 = copy_grid (grid);
+    int bar_ret; // barrier return
+    grid_t *grid_3 = copy_grid (grid); // Update copy of grid
 
 
     pthread_t *tid = (pthread_t *) malloc (sizeof (pthread_t) * num_threads); /* Data structure to store the thread IDs */
@@ -121,10 +140,10 @@ compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
         exit (EXIT_FAILURE);
     }
 
-    pthread_attr_t attributes;                  /* Thread attributes */
-    pthread_mutex_t mutex_for_diff;              /* Lock for the shared variable sum */
+    pthread_attr_t attributes;              /* Thread attributes */
+    pthread_mutex_t mutex_for_diff;         /* Lock for the shared variable sum */
 
-    bar_ret = pthread_barrier_init(&barrier, NULL, num_threads);
+    bar_ret = pthread_barrier_init(&barrier, NULL, num_threads); // Init thread barrier 
     if (bar_ret != 0){
         printf("Barrier Init Failure\n");
         exit(EXIT_FAILURE);
@@ -137,17 +156,16 @@ compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
 
     /* Allocate memory on the heap for the required data structures and create the worker threads */
     int i;
-    double diff = 0;
-    int numels = 0;
-    int ret_numiter = 0; 
-    ARGS_FOR_THREAD **args_for_thread;
+    double diff = 0;        // Operated on by threads
+    int numels = 0;         // Operated on by threads
+    int ret_numiter = 0;    // Operated on by threads
+
+    ARGS_FOR_THREAD **args_for_thread;      /* Fill in structure used by each thread */
     args_for_thread = malloc (sizeof (ARGS_FOR_THREAD) * num_threads);
     for (i = 0; i < num_threads; i++){
         args_for_thread[i] = (ARGS_FOR_THREAD *) malloc (sizeof (ARGS_FOR_THREAD));
         args_for_thread[i]->tid = i; 
         args_for_thread[i]->num_threads = num_threads;
-        //args_for_thread[i]->offset = i * chunk_size; 
-        //args_for_thread[i]->chunk_size = chunk_size; 
         args_for_thread[i]->diff = &diff;
         args_for_thread[i]->numels = &numels;
         args_for_thread[i]->ret_numiter = &ret_numiter;
@@ -156,6 +174,7 @@ compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
         args_for_thread[i]->update_grid=grid_3;
     }
 
+    /* Create each thread and execute Jacobi function */
     for (i = 0; i < num_threads; i++)
         pthread_create (&tid[i], &attributes, Jacobi, (void *) args_for_thread[i]);
 					 
@@ -164,6 +183,7 @@ compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
         pthread_join (tid[i], NULL);
         //printf("Joined\n");
   
+    /* Wait for all threads to finish and free barrier resources */
     pthread_barrier_destroy(&barrier);
 
     /* Free data structures */
@@ -177,23 +197,27 @@ compute_using_pthreads_jacobi (grid_t *grid, int num_threads)
 void *
 Jacobi(void *args)
 {
-    int debug = 0;
+    int debug = 0; // RESERVED FOR TESTING ONLY
+
+    /* Unpack Args */
     ARGS_FOR_THREAD *targs = (ARGS_FOR_THREAD *) args;
 
     int num_iter = 0;
 	int done = 0;
     int i, j;
 	float old, new; 
-    float eps = 1e-2; /* Convergence criteria. */
+    float eps = 1e-6; /* Convergence criteria. */
     int num_elements;
     double t_diff;
     double avg; 
 
+    /* Let's Shorten up those grid calls a little bit */
     grid_t *ref_grid = targs->ref_grid;
     grid_t *update_grid = targs->update_grid;
-    grid_t *t_grid;
+    grid_t *t_grid; // Temporary Grid variable
     
-    if (targs->tid==1 && debug == 1)
+    /* Kevin's Testing Suite */
+    if (targs->tid==1 && debug == 1) 
     {
         printf("ref_grid %d\n",ref_grid->dim);
         printf("update_grid %d\n",update_grid->dim);
@@ -209,6 +233,7 @@ Jacobi(void *args)
         }
     }
     
+    /* Jacobian Solver */
 	while(!done) { /* While we have not converged yet. */
         t_diff = 0.0;
         num_elements = 0;
@@ -228,19 +253,25 @@ Jacobi(void *args)
                 num_elements++;
             }
         }
+
+        
         pthread_mutex_lock(targs->mutex_for_diff);
-        *(targs->diff) += t_diff;
-        *(targs->numels) += num_elements;
+        *(targs->diff) += t_diff; // Send diff to collector
+        *(targs->numels) += num_elements; // Send numel to collector
         pthread_mutex_unlock(targs->mutex_for_diff);
         //printf ("Iteration %d. DIFF: %f.\n", num_iter, diff);
         
+
+        /* Wait until all grid is updated */
         pthread_barrier_wait(&barrier);
-        num_iter++;
+        num_iter++; // Iterate
 
-        avg = *(targs->diff)/ *(targs->numels);
+        avg = *(targs->diff)/ *(targs->numels); // Let all threads get the same average
 
         pthread_barrier_wait(&barrier);
 
+
+        /* There should always be a thread 0: Let it reset the shared variables */
         if (targs->tid == 0)
         {
             printf ("Iteration %d. DIFF: %f.\n", num_iter, avg);
@@ -253,6 +284,7 @@ Jacobi(void *args)
         if (avg < eps) 
             done = 1;
         
+        /* Swap the reference grid and update grid pointers */
         t_grid = ref_grid;
         ref_grid = update_grid;
         update_grid = t_grid;
