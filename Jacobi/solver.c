@@ -206,7 +206,7 @@ Jacobi(void *args)
 	int done = 0;
     int i, j;
 	float old, new; 
-    float eps = 1e-6; /* Convergence criteria. */
+    float eps = 1e-3; /* Convergence criteria. */
     int num_elements;
     double t_diff;
     double avg; 
